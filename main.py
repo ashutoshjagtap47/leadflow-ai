@@ -1,5 +1,12 @@
-from fastapi import FastAPI, HTTPException
+import json
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+
+from database import Base, engine, SessionLocal
+from models import LeadDB
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -14,6 +21,13 @@ class Lead(BaseModel):
     source: str
     campaign: str
     message: str | None = None
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 DISPOSABLE_DOMAINS = {"mailinator.com", "tempmail.com", "10minutemail.com", "guerrillamail.com"}
 
@@ -56,60 +70,88 @@ def score_lead(lead: Lead) -> dict:
 
     return {"score": score, "tier": tier, "reasons": reasons}
 
-# Temporary in-memory storage
-leads_db: list[dict] = []
-next_id = 1
+def lead_to_dict(lead_db: LeadDB) -> dict:
+    return {
+        "id": lead_db.id,
+        "name": lead_db.name,
+        "email": lead_db.email,
+        "company": lead_db.company,
+        "job_title": lead_db.job_title,
+        "country": lead_db.country,
+        "industry": lead_db.industry,
+        "company_size": lead_db.company_size,
+        "source": lead_db.source,
+        "campaign": lead_db.campaign,
+        "message": lead_db.message,
+        "score": lead_db.score,
+        "tier": lead_db.tier,
+        "score_reasons": json.loads(lead_db.score_reasons) if lead_db.score_reasons else None,
+    }
 
 @app.get("/")
 def read_root():
     return {"message": "LeadFlow AI is running"}
 
 @app.post("/leads")
-def create_lead(lead: Lead):
-    global next_id
+def create_lead(lead: Lead, db: Session = Depends(get_db)):
+    existing = db.query(LeadDB).filter(LeadDB.email == lead.email).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A lead with email {lead.email} already exists"
+        )
 
-    for existing_lead in leads_db:
-        if existing_lead["email"] == lead.email:
-            raise HTTPException(
-                status_code=409,
-                detail=f"A lead with email {lead.email} already exists"
-            )
-
-    new_lead = lead.model_dump()
-    new_lead["id"] = next_id
-    leads_db.append(new_lead)
-    next_id += 1
+    new_lead = LeadDB(**lead.model_dump())
+    db.add(new_lead)
+    db.commit()
+    db.refresh(new_lead)
 
     return {
         "message": "Lead received successfully",
-        "lead": new_lead
+        "lead": lead_to_dict(new_lead)
     }
 
 @app.get("/leads")
-def get_all_leads():
-    return {"count": len(leads_db), "leads": leads_db}
+def get_all_leads(db: Session = Depends(get_db)):
+    leads = db.query(LeadDB).all()
+    return {"count": len(leads), "leads": [lead_to_dict(l) for l in leads]}
 
 @app.get("/leads/{lead_id}")
-def get_lead(lead_id: int):
-    for lead in leads_db:
-        if lead["id"] == lead_id:
-            return lead
-    raise HTTPException(status_code=404, detail="Lead not found")
+def get_lead(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead_to_dict(lead_db)
 
 @app.post("/leads/{lead_id}/score")
-def score_lead_endpoint(lead_id: int):
-    for stored_lead in leads_db:
-        if stored_lead["id"] == lead_id:
-            lead_obj = Lead(**stored_lead)
-            result = score_lead(lead_obj)
-            stored_lead["score"] = result["score"]
-            stored_lead["tier"] = result["tier"]
-            stored_lead["score_reasons"] = result["reasons"]
-            return {
-                "message": "Lead scored successfully",
-                "lead_id": lead_id,
-                "score": result["score"],
-                "tier": result["tier"],
-                "reasons": result["reasons"]
-            }
-    raise HTTPException(status_code=404, detail="Lead not found")
+def score_lead_endpoint(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    lead_obj = Lead(
+        name=lead_db.name,
+        email=lead_db.email,
+        company=lead_db.company,
+        job_title=lead_db.job_title,
+        country=lead_db.country,
+        industry=lead_db.industry,
+        company_size=lead_db.company_size,
+        source=lead_db.source,
+        campaign=lead_db.campaign,
+        message=lead_db.message,
+    )
+    result = score_lead(lead_obj)
+
+    lead_db.score = result["score"]
+    lead_db.tier = result["tier"]
+    lead_db.score_reasons = json.dumps(result["reasons"])
+    db.commit()
+
+    return {
+        "message": "Lead scored successfully",
+        "lead_id": lead_id,
+        "score": result["score"],
+        "tier": result["tier"],
+        "reasons": result["reasons"]
+    }
