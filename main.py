@@ -70,6 +70,23 @@ def score_lead(lead: Lead) -> dict:
 
     return {"score": score, "tier": tier, "reasons": reasons}
 
+EUROPEAN_COUNTRIES = {"United Kingdom", "Germany", "France", "Spain", "Italy", "Netherlands", "Ireland"}
+
+def route_lead(country: str, tier: str) -> dict:
+    if tier == "high":
+        return {"owner": "senior_owner", "reason": "Lead tier is high"}
+
+    if country == "India":
+        return {"owner": "owner_india", "reason": "Country is India"}
+
+    if country == "United States":
+        return {"owner": "owner_us", "reason": "Country is United States"}
+
+    if country in EUROPEAN_COUNTRIES:
+        return {"owner": "owner_europe", "reason": f"Country is {country}, routed to Europe owner"}
+
+    return {"owner": "owner_general", "reason": "No specific routing rule matched; sent to general queue"}
+
 def lead_to_dict(lead_db: LeadDB) -> dict:
     return {
         "id": lead_db.id,
@@ -86,6 +103,8 @@ def lead_to_dict(lead_db: LeadDB) -> dict:
         "score": lead_db.score,
         "tier": lead_db.tier,
         "score_reasons": json.loads(lead_db.score_reasons) if lead_db.score_reasons else None,
+        "owner": lead_db.owner,
+        "routing_reason": lead_db.routing_reason,
     }
 
 @app.get("/")
@@ -154,4 +173,28 @@ def score_lead_endpoint(lead_id: int, db: Session = Depends(get_db)):
         "score": result["score"],
         "tier": result["tier"],
         "reasons": result["reasons"]
+    }
+@app.post("/leads/{lead_id}/route")
+def route_lead_endpoint(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    if lead_db.tier is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Lead must be scored before it can be routed. Call /score first."
+        )
+
+    result = route_lead(lead_db.country, lead_db.tier)
+
+    lead_db.owner = result["owner"]
+    lead_db.routing_reason = result["reason"]
+    db.commit()
+
+    return {
+        "message": "Lead routed successfully",
+        "lead_id": lead_id,
+        "owner": result["owner"],
+        "reason": result["reason"]
     }

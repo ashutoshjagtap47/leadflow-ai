@@ -18,3 +18,5 @@ class LeadDB(Base):
     score = Column(Integer, nullable=True)
     tier = Column(String, nullable=True)
     score_reasons = Column(String, nullable=True)
+    owner = Column(String, nullable=True)
+    routing_reason = Column(String, nullable=True)
