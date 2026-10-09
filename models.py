@@ -20,3 +20,5 @@ class LeadDB(Base):
     score_reasons = Column(String, nullable=True)
     owner = Column(String, nullable=True)
     routing_reason = Column(String, nullable=True)
+    followup_status = Column(String, nullable=True, default="none")
+    followup_draft = Column(String, nullable=True)

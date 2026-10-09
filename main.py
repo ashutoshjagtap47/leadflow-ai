@@ -105,6 +105,8 @@ def lead_to_dict(lead_db: LeadDB) -> dict:
         "score_reasons": json.loads(lead_db.score_reasons) if lead_db.score_reasons else None,
         "owner": lead_db.owner,
         "routing_reason": lead_db.routing_reason,
+        "followup_status": lead_db.followup_status,
+        "followup_draft": lead_db.followup_draft,
     }
 
 @app.get("/")
@@ -211,8 +213,55 @@ def generate_ai_summary(lead_id: int, db: Session = Depends(get_db)):
     if "error" in result:
         raise HTTPException(status_code=502, detail=result)
 
+    lead_db.followup_draft = result.get("email_draft")
+    lead_db.followup_status = "draft"
+    db.commit()
+
     return {
         "message": "AI summary generated",
         "lead_id": lead_id,
         "ai_output": result
+    }
+
+@app.post("/leads/{lead_id}/approve-followup")
+def approve_followup(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    if lead_db.followup_status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot approve: current status is '{lead_db.followup_status}', expected 'draft'"
+        )
+
+    lead_db.followup_status = "approved"
+    db.commit()
+
+    return {
+        "message": "Follow-up approved",
+        "lead_id": lead_id,
+        "followup_status": lead_db.followup_status,
+        "followup_draft": lead_db.followup_draft
+    }
+
+@app.post("/leads/{lead_id}/reject-followup")
+def reject_followup(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    if lead_db.followup_status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reject: current status is '{lead_db.followup_status}', expected 'draft'"
+        )
+
+    lead_db.followup_status = "rejected"
+    db.commit()
+
+    return {
+        "message": "Follow-up rejected",
+        "lead_id": lead_id,
+        "followup_status": lead_db.followup_status
     }
