@@ -4,7 +4,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from llm_service import generate_lead_summary
 from database import Base, engine, SessionLocal
-from models import LeadDB
+from models import LeadDB, WorkflowEvent
 
 Base.metadata.create_all(bind=engine)
 
@@ -109,6 +109,11 @@ def lead_to_dict(lead_db: LeadDB) -> dict:
         "followup_draft": lead_db.followup_draft,
     }
 
+def log_event(db: Session, lead_id: int, event_type: str, details: str = None):
+    event = WorkflowEvent(lead_id=lead_id, event_type=event_type, details=details)
+    db.add(event)
+    db.commit()
+
 @app.get("/")
 def read_root():
     return {"message": "LeadFlow AI is running"}
@@ -126,6 +131,7 @@ def create_lead(lead: Lead, db: Session = Depends(get_db)):
     db.add(new_lead)
     db.commit()
     db.refresh(new_lead)
+    log_event(db, new_lead.id, "lead_created", f"Lead created for {new_lead.email}")
 
     return {
         "message": "Lead received successfully",
@@ -169,6 +175,8 @@ def score_lead_endpoint(lead_id: int, db: Session = Depends(get_db)):
     lead_db.score_reasons = json.dumps(result["reasons"])
     db.commit()
 
+    log_event(db, lead_id, "lead_scored", f"Score {result['score']}, tier {result['tier']}")
+
     return {
         "message": "Lead scored successfully",
         "lead_id": lead_id,
@@ -194,6 +202,8 @@ def route_lead_endpoint(lead_id: int, db: Session = Depends(get_db)):
     lead_db.routing_reason = result["reason"]
     db.commit()
 
+    log_event(db, lead_id, "lead_routed", f"Routed to {result['owner']}: {result['reason']}")
+
     return {
         "message": "Lead routed successfully",
         "lead_id": lead_id,
@@ -217,6 +227,8 @@ def generate_ai_summary(lead_id: int, db: Session = Depends(get_db)):
     lead_db.followup_status = "draft"
     db.commit()
 
+    log_event(db, lead_id, "ai_summary_generated", "AI generated summary and follow-up draft")
+
     return {
         "message": "AI summary generated",
         "lead_id": lead_id,
@@ -237,6 +249,8 @@ def approve_followup(lead_id: int, db: Session = Depends(get_db)):
 
     lead_db.followup_status = "approved"
     db.commit()
+
+    log_event(db, lead_id, "followup_approved", "Human approved the AI-generated follow-up")
 
     return {
         "message": "Follow-up approved",
@@ -260,8 +274,36 @@ def reject_followup(lead_id: int, db: Session = Depends(get_db)):
     lead_db.followup_status = "rejected"
     db.commit()
 
+    log_event(db, lead_id, "followup_rejected", "Human rejected the AI-generated follow-up")
+
     return {
         "message": "Follow-up rejected",
         "lead_id": lead_id,
         "followup_status": lead_db.followup_status
+    }
+
+@app.get("/leads/{lead_id}/history")
+def get_lead_history(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    events = (
+        db.query(WorkflowEvent)
+        .filter(WorkflowEvent.lead_id == lead_id)
+        .order_by(WorkflowEvent.created_at)
+        .all()
+    )
+
+    return {
+        "lead_id": lead_id,
+        "event_count": len(events),
+        "history": [
+            {
+                "event_type": e.event_type,
+                "details": e.details,
+                "timestamp": e.created_at
+            }
+            for e in events
+        ]
     }
