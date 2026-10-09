@@ -2,7 +2,7 @@ import json
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-
+from llm_service import generate_lead_summary
 from database import Base, engine, SessionLocal
 from models import LeadDB
 
@@ -197,4 +197,22 @@ def route_lead_endpoint(lead_id: int, db: Session = Depends(get_db)):
         "lead_id": lead_id,
         "owner": result["owner"],
         "reason": result["reason"]
+    }
+
+@app.post("/leads/{lead_id}/ai-summary")
+def generate_ai_summary(lead_id: int, db: Session = Depends(get_db)):
+    lead_db = db.query(LeadDB).filter(LeadDB.id == lead_id).first()
+    if not lead_db:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    lead_dict = lead_to_dict(lead_db)
+    result = generate_lead_summary(lead_dict)
+
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result)
+
+    return {
+        "message": "AI summary generated",
+        "lead_id": lead_id,
+        "ai_output": result
     }
